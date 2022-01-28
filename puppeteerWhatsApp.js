@@ -10,17 +10,30 @@ const fetch = require('node-fetch')
 const qrcode_terminal = require('qrcode-terminal')
 const moment = require('moment');
 
+// DEFINE PORT WEBSERVICE
+const argv = process.argv.slice(2);
+console.log(argv);
+
+if(typeof argv[0] === 'undefined')var port = 8333;
+else var port = parseInt((argv[0]).replace('PORT=', ''));
+
+if(typeof argv[1] === 'undefined')var headless = true;
+else var headless = Boolean((argv[1]).replace('HEADLESS=', ''));
+
+if(typeof argv[2] === 'undefined')var debug = true;
+else var debug = Boolean((argv[2]).replace('DEBUG=', ''));
+
 // DEFINE CONST WHATSAPP WEB
-const APP_HEADLESS = true
+const APP_HEADLESS = headless
 const APP_HOST = '0.0.0.0'
-const APP_PORT = 8333
+const APP_PORT = port;
 const APP_SERVER = 'http://localhost:' + APP_PORT
 const APP_URI = 'https://web.whatsapp.com'
-const APP_KEEP_PHONE_CONNECTED_SELECTOR = '[data-asset-intro-image="true"]'
+const APP_KEEP_PHONE_CONNECTED_SELECTOR = '[data-tab]'
 const APP_QR_VALUE_SELECTOR = '[data-ref]'
 const APP_LANGUAGE = 'en'
 const APP_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/79.0.3945.130 Safari/537.36'
-const APP_DEBUG = true
+const APP_DEBUG = debug
 
 // PUPPETEER WHATSAPP CLASS
 class PuppeteerWhatsApp extends EventEmitter {
@@ -28,15 +41,6 @@ class PuppeteerWhatsApp extends EventEmitter {
     super()
     this.browser = null
     this.page = null
-  }
-
-  // CHECKED
-  getLog (name, e) {
-    if (APP_DEBUG) {
-      console.log('function ' +  name)
-      console.log(moment().format('YYYY-MM-DD HH:mm:ss'));
-      console.log(e)
-    }
   }
 
   // CHECKED
@@ -139,7 +143,6 @@ class PuppeteerWhatsApp extends EventEmitter {
                 headers: { 'Content-Type': 'application/json' }
               }
               const uri_fetch = APP_SERVER + '/api/' + token_name + '/start'
-              console.log(uri_fetch)
               fetch(uri_fetch, send)
               page.close()
             }
@@ -149,7 +152,7 @@ class PuppeteerWhatsApp extends EventEmitter {
 
       // PUPPETEER PAGE ERROR
       await page.on('pageerror', e => {
-        getLog ('pageerror', e)
+        this.getLog('pageerror', e)
       })
 
       // BLOCK RESOURCES TO LOAD FAST
@@ -295,7 +298,7 @@ class PuppeteerWhatsApp extends EventEmitter {
               }
             })
           } catch (e) {
-            getLog ('exposeFunction(onChangeState)', e)
+            this.getLog('exposeFunction(onChangeState)', e)
           }
         })
 
@@ -308,14 +311,14 @@ class PuppeteerWhatsApp extends EventEmitter {
             window.Store.AppState.on('change', () => onChangeState())
             // EMMITER EVENTS MESSAGES ADD
             window.Store.Msg.on('add', (new_message) => {
-              if (typeof new_message.isNewMsg === 'undefined') return
               const message = new_message.serialize()
-              // console.log(message);
-              if (message.isNewMsg == false || message.id.fromMe == true || message.id.remote == 'status@broadcast' || message.type != 'chat') return
-              message.apiToken = token
-              // if(message.type == 'chat')
-              onAddMessage(message)
-              // else onAddMedia(message);
+              if (typeof message.type === 'undefined' || typeof message.isNewMsg === 'undefined' || message.isNewMsg == false || message.broadcast == true || message.id.remote == 'status@broadcast' || message.id.fromMe == true)return
+              else{
+                if(message.type == 'chat' || message.type == 'location'){
+                  message.apiToken = token
+                  onAddMessage(message)
+                }else return
+              }
             })
           }, 4500)
         }, token)
@@ -326,7 +329,16 @@ class PuppeteerWhatsApp extends EventEmitter {
         this.emit('API', { action: 'ready', value: value, status: true })
       } else await browser.close()
     } catch (e) {
-      getLog('start', e)
+      this.getLog('start', e)
+    }
+  }
+
+  // CHECKED
+  getLog (name, e) {
+    if (APP_DEBUG) {
+      console.log('function ' +  name)
+      console.log(moment().format('YYYY-MM-DD HH:mm:ss'));
+      console.log(e)
     }
   }
 
@@ -335,8 +347,8 @@ class PuppeteerWhatsApp extends EventEmitter {
     try {
       new Promise((resolve, reject) => {
         var time = new Date()
-        //console.log(message);
         if (typeof message === 'object' && typeof message.apiToken !== 'undefined' && typeof message.from !== 'undefined') {
+          if( APP_DEBUG )console.log(message);
           const token = message.apiToken
           const WhatsAppDB = WhatsApp.getDatabaseToken()
           const data_token = WhatsAppDB.get('token').find({ name: token }).value()
@@ -359,15 +371,11 @@ class PuppeteerWhatsApp extends EventEmitter {
                       body: JSON.stringify({ token: token, message: message.body, data: JSON.stringify(message) }),
                       headers: { 'Content-Type': 'application/json' }
                     }
-                    //console.log(send);
                     fetch(bot, send).then(res => res.json()).then(parsed => {
-                      //console.log(parsed);
                       if (typeof parsed === 'object' && parsed.status == true && typeof parsed.message !== 'undefined') {
                         var bot_message = parsed.message
                         var options = {}
-                        if (typeof parsed.options !== 'undefined') {
-                          try { var options = JSON.parse(parsed.options) } catch (e) {}
-                        }
+                        if (typeof parsed.options !== 'undefined')var options = parsed.options;
                         WhatsApp.sendMessage(page, from, bot_message, options)
                       }
                     })
@@ -390,7 +398,7 @@ class PuppeteerWhatsApp extends EventEmitter {
         }
       })
     } catch (e) {
-      getLog('responseBot', e)
+      this.getLog('responseBot', e)
       return false
     }
   }
@@ -402,7 +410,7 @@ class PuppeteerWhatsApp extends EventEmitter {
       if (typeof data_url !== 'undefined' && typeof data_url.host !== 'undefined' && data_url.host != '') return true
       else return false
     } catch (e) {
-      getLog('isUrl', e)
+      this.getLog('isUrl', e)
       return false
     }
   }
@@ -418,7 +426,7 @@ class PuppeteerWhatsApp extends EventEmitter {
       var db = low(adapter)
       db.defaults({ token: [] }).write()
     } catch (e) {
-      getLog('getDatabaseToken', e)
+      this.getLog('getDatabaseToken', e)
     }
     return db
   }
@@ -441,7 +449,7 @@ class PuppeteerWhatsApp extends EventEmitter {
         }
       }
     } catch (e) {
-      getLog('getTimeSend', e)
+      this.getLog('getTimeSend', e)
     }
     return to_time
   }
@@ -456,7 +464,7 @@ class PuppeteerWhatsApp extends EventEmitter {
         await httpProxy.createServer({ target: ws_endpoint, ws: true, localAddress: APP_HOST }).listen(port)
       }
     } catch (e) {
-      getLog('setWebSocket', e)
+      this.getLog('setWebSocket', e)
     }
     return 'ws://' + APP_HOST + ':' + port
   }
@@ -468,7 +476,7 @@ class PuppeteerWhatsApp extends EventEmitter {
       const pages_created = await browser.pages()
       return { browser: browser, page: pages_created[0], endpoint: ws_url, type: 'success' }
     } catch (e) {
-      getLog('getWebSocketPage', e)
+      this.getLog('getWebSocketPage', e)
       return { browser: null, page: null, endpoint: e.target.url, type: e.type }
     }
   }
@@ -483,18 +491,21 @@ class PuppeteerWhatsApp extends EventEmitter {
             if (typeof get_id.id !== 'undefined' && typeof get_id.id.server !== 'undefined' && get_id.id.server == 'c.us') {
               window.App.sendSeen(id)
               const number = id.replace(/\D+/g, '')
-
               const replaceNumber = (message, number) => message.replace(/{number}/g, number)
-
+              try{
+                var noption = JSON.parse(options);
+              }catch(e){
+                var noption = JSON.parse(JSON.stringify(options));
+              }
               if (typeof message === 'string' && message != '') {
                 var message = replaceNumber(message, number)
-                window.App.sendMessage(get_id, message, options)
+                window.App.sendMessage(get_id, message, noption)
                 return { number: number, message: message, status_code: 200 }
               } else if (Array.isArray(message) && message.length > 0) {
                 message.forEach((data_message) => {
                   if (typeof data_message === 'string' && data_message != '') {
                     var message = replaceNumber(data_message, number)
-                    window.App.sendMessage(get_id, data_message, options)
+                    window.App.sendMessage(get_id, data_message, noption)
                     return { number: number, message: data_message, status_code: 200 }
                   }
                 })
@@ -506,7 +517,7 @@ class PuppeteerWhatsApp extends EventEmitter {
         }
       }, message, id, options)
     } catch (e) {
-      getLog('sendMessageToID', e)
+      this.getLog('sendMessageToID', e)
       return { number: null, message: 'Close', status_code: 501 }
     }
   }
@@ -521,7 +532,7 @@ class PuppeteerWhatsApp extends EventEmitter {
         return me
       })
     } catch (e) {
-      getLog('getMe', e)
+      this.getLog('getMe', e)
       return {}
     }
   }
@@ -534,7 +545,7 @@ class PuppeteerWhatsApp extends EventEmitter {
         else return window.Store.Contact.get(id).serialize()
       }, id)
     } catch (e) {
-      getLog('getContact', e)
+      this.getLog('getContact', e)
       return {}
     }
   }
@@ -547,7 +558,7 @@ class PuppeteerWhatsApp extends EventEmitter {
         else return window.Store.ProfilePicThumb.get(id).serialize()
       }, id)
     } catch (e) {
-      getLog('getProfilePicThumb', e)
+      this.getLog('getProfilePicThumb', e)
       return {}
     }
   }
@@ -560,7 +571,7 @@ class PuppeteerWhatsApp extends EventEmitter {
         else return window.Store.Chat.get(id).serialize()
       }, id)
     } catch (e) {
-      getLog('getChat', e)
+      this.getLog('getChat', e)
       return {}
     }
   }
@@ -578,7 +589,7 @@ class PuppeteerWhatsApp extends EventEmitter {
         return { chat: no_chats, unread: no_unread }
       })
     } catch (e) {
-      getLog('getChatStats', e)
+      this.getLog('getChatStats', e)
       return { chat: 0, unread: 0 }
     }
   }
@@ -605,7 +616,7 @@ class PuppeteerWhatsApp extends EventEmitter {
         }
       })
     } catch (e) {
-      getLog('getChatUnread', e)
+      this.getLog('getChatUnread', e)
       return {}
     }
   }
@@ -623,7 +634,7 @@ class PuppeteerWhatsApp extends EventEmitter {
         return false
       }, id, APP_DEBUG)
     } catch (e) {
-      getLog('loadEarlierMsgstById', e)
+      this.getLog('loadEarlierMsgstById', e)
       return false
     }
   }
@@ -641,7 +652,7 @@ class PuppeteerWhatsApp extends EventEmitter {
         return false
       }, id, APP_DEBUG)
     } catch (e) {
-      getLog('setContactSeen', e)
+      this.getLog('setContactSeen', e)
       return false
     }
   }
@@ -658,7 +669,7 @@ class PuppeteerWhatsApp extends EventEmitter {
         return false
       }, APP_DEBUG)
     } catch (e) {
-      getLog('setLogout', e)
+      this.getLog('setLogout', e)
       return false
     }
   }
@@ -682,7 +693,7 @@ class PuppeteerWhatsApp extends EventEmitter {
         return no_ids
       }
     } catch (e) {
-      getLog('sendMessage', e)
+      this.getLog('sendMessage', e)
       return 0
     }
   }
@@ -708,7 +719,7 @@ class PuppeteerWhatsApp extends EventEmitter {
       }
       return { chats: no_chats, message: message, status_code: status_code }
     } catch (e) {
-      getLog('sendBroadcast', e)
+      this.getLog('sendBroadcast', e)
       return { chats: 0, message: null, status_code: 501 }
     }
   }
@@ -735,7 +746,7 @@ class PuppeteerWhatsApp extends EventEmitter {
         return to_number
       }, unread)
     } catch (e) {
-      getLog('getNumbers', e)
+      this.getLog('getNumbers', e)
       return []
     }
   }
@@ -755,7 +766,7 @@ class PuppeteerWhatsApp extends EventEmitter {
         await browser.close()
       }
     } catch (e) {
-      getLog('setDestroy', e)
+      this.getLog('setDestroy', e)
       return null
     }
   }
@@ -777,7 +788,7 @@ class PuppeteerWhatsApp extends EventEmitter {
         return json
       }, APP_DEBUG)
     } catch (e) {
-      getLog('getStatePage', e)
+      this.getLog('getStatePage', e)
       return {}
     }
   }
@@ -789,7 +800,7 @@ class PuppeteerWhatsApp extends EventEmitter {
         return navigator.storage.estimate()
       })
     } catch (e) {
-      getLog('getNavigatorStorage', e)
+      this.getLog('getNavigatorStorage', e)
       return {}
     }
   }
@@ -815,7 +826,7 @@ class PuppeteerWhatsApp extends EventEmitter {
           server.listen(APP_PORT, () => {
             //var data_address = server.address()
             //console.log('START WEB SERVICE ON ' + data_address.address + data_address.port)
-            console.log('START SERVICE ON ' + APP_SERVER)
+            console.log('START WEBSERVICE ON ' + APP_SERVER)
             return ws
           })
 
@@ -868,10 +879,12 @@ class PuppeteerWhatsApp extends EventEmitter {
                     const number = req.body.number
                     const message = req.body.message
                     var options = {}
-                    if (typeof req.body.options !== 'undefined') {
+                    if (typeof req.body.options !== 'undefined' && req.body.options != '') {
                       try {
                         var options = JSON.parse(req.body.options)
-                      } catch (e) {}
+                      } catch (e) {
+                        var options = JSON.parse(JSON.stringify(req.body.options));
+                      }
                     }
 
                     WhatsApp.getWebSocketPage(data_token.endpoint).then(json_page => {
@@ -952,7 +965,7 @@ class PuppeteerWhatsApp extends EventEmitter {
         }
       }
     } catch (e) {
-      getLog('startWebService', e)
+      this.getLog('startWebService', e)
     }
   }
 }
