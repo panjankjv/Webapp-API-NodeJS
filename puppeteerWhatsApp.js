@@ -17,17 +17,26 @@ console.log(argv);
 if(typeof argv[0] === 'undefined')var port = 8333;
 else var port = parseInt((argv[0]).replace('PORT=', ''));
 
-if(typeof argv[1] === 'undefined')var headless = true;
-else var headless = Boolean((argv[1]).replace('HEADLESS=', ''));
+if(typeof argv[1] === 'undefined')var headless = 'true';
+else var headless = (argv[1]).replace('HEADLESS=', '');
+var headless = headless == 'true' ? true : false;
 
-if(typeof argv[2] === 'undefined')var debug = true;
-else var debug = Boolean((argv[2]).replace('DEBUG=', ''));
+if(typeof argv[2] === 'undefined')var debug = 'true';
+else var debug = (argv[2]).replace('DEBUG=', '');
+var debug = debug == 'true' ? true : false;
+
+if(typeof argv[3] === 'undefined')var linux = 'false';
+else var linux = (argv[3]).replace('LINUX=', '');
+var linux = linux == 'true' ? true : false;
 
 // DEFINE CONST WHATSAPP WEB
 const APP_HEADLESS = headless
 const APP_HOST = '0.0.0.0'
-const APP_PORT = port;
+const APP_PORT = port
+const APP_LINUX = linux
 const APP_SERVER = 'http://localhost:' + APP_PORT
+const APP_API_DIR = '/'
+const APP_API_PATH = 'api'
 const APP_URI = 'https://web.whatsapp.com'
 const APP_KEEP_PHONE_CONNECTED_SELECTOR = '[data-tab]'
 const APP_QR_VALUE_SELECTOR = '[data-ref]'
@@ -44,7 +53,7 @@ class PuppeteerWhatsApp extends EventEmitter {
   }
 
   // CHECKED
-  async start (token, bot, webhook) {
+  async start(token, bot, webhook){
     try {
       const time_start = Date.now()
 
@@ -68,7 +77,18 @@ class PuppeteerWhatsApp extends EventEmitter {
         '--disable-gl-extensions', '--disable-extensions', '--disable-composited-antialiasing',
         '--disable-canvas-aa', '--disable-3d-apis', '--disable-accelerated-2d-canvas',
         '--disable-accelerated-jpeg-decoding', '--disable-accelerated-mjpeg-decode', '--disable-app-list-dismiss-on-blur',
-        '--disable-accelerated-video-decode', '--mute-audio'
+        '--disable-accelerated-video-decode', '--mute-audio',
+        '--log-level=3',
+        '--disable-infobars',
+        '--disable-web-security',
+        '--disable-site-isolation-trials',
+        '--ignore-gpu-blacklist',
+        '--ignore-certificate-errors',
+        '--ignore-certificate-errors-spki-list',
+        '--disable-default-apps',
+        '--enable-features=NetworkService',
+        '--no-first-run',
+        '--no-zygote'
       ];
 
       if(APP_HEADLESS){
@@ -79,13 +99,19 @@ class PuppeteerWhatsApp extends EventEmitter {
       }
       //console.log(puppeteer_args);
 
-      // NEW PUPPETEER
-      const browser = await puppeteer.launch({
+      const browser_args = {
         headless: APP_HEADLESS,
         ignoreHTTPSErrors: true,
         defaultViewport: null,
         args: puppeteer_args
-      })
+      }
+
+      if(APP_LINUX){
+        browser_args.executablePath = '/usr/bin/chromium-browser'
+      }
+
+      // NEW PUPPETEER
+      const browser = await puppeteer.launch(browser_args)
       this.browser = browser
 
       // CREATE PUPPETEER INCOGNITO
@@ -142,7 +168,7 @@ class PuppeteerWhatsApp extends EventEmitter {
                 body: JSON.stringify({ bot: data_token.bot, webhook: data_token.webhook }),
                 headers: { 'Content-Type': 'application/json' }
               }
-              const uri_fetch = APP_SERVER + '/api/' + token_name + '/start'
+              const uri_fetch = APP_SERVER + '/' + APP_API_PATH + '/' + token_name + '/start'
               fetch(uri_fetch, send)
               page.close()
             }
@@ -269,14 +295,31 @@ class PuppeteerWhatsApp extends EventEmitter {
             console.log('WHATSAPP LOADED IN ' + time + ' SEC')
           })
 
-        // REGISTER EVENTS
+        // ON NEW MESSAGE
         await page.exposeFunction('onAddMessage', (message) => {
-          this.responseBot(message, this);
+          this.sendToBot(message, this)
         })
 
-        // await page.exposeFunction('onAddMedia', message => this.emit('MEDIA', message));
+        /*
+        await page.exposeFunction('onAddMessageUndefined', (message) => {
+          this.sendToWebhookTo(message, this)
+        })
+        */
 
-        // STATE PAGE CHANGE
+        // ON STATE CHANGE
+        await page.exposeFunction('onAppStateChangedEvent', (state) => {
+          try {
+            if(APP_DEBUG)console.log('onAppStateChangedEvent ' + state)
+            if (!['OPENING', 'CONNECTED', 'PAIRING', 'TIMEOUT'].includes(state)) {
+              if(APP_DEBUG)console.log('ALERT RELOAD ->' + state)
+              page.reload()
+            }
+          } catch (e) {
+            this.getLog('exposeFunction(onAppStateChangedEvent)', e)
+          }
+        });
+
+        // ON STATE CHANGE
         await page.exposeFunction('onChangeState', () => {
           try {
             this.getStatePage(page).then(json => {
@@ -307,18 +350,21 @@ class PuppeteerWhatsApp extends EventEmitter {
 
         await page.evaluate((token) => {
           setTimeout(() => {
+            window.Store.AppState.on('change:state', (_AppState, state) => { window.onAppStateChangedEvent(state); });
             // EMMITER EVENT APP STATE
             window.Store.AppState.on('change', () => onChangeState())
             // EMMITER EVENTS MESSAGES ADD
             window.Store.Msg.on('add', (new_message) => {
               const message = new_message.serialize()
-              if (typeof message.type === 'undefined' || typeof message.isNewMsg === 'undefined' || message.isNewMsg == false || message.broadcast == true || message.id.remote == 'status@broadcast' || message.id.fromMe == true)return
-              else{
-                if(message.type == 'chat' || message.type == 'location'){
-                  message.apiToken = token
+              if(message.id.remote != 'status@broadcast'){
+                message.apiToken = token
+                if (typeof message.type === 'undefined' || typeof message.isNewMsg === 'undefined' || message.isNewMsg == false || message.broadcast == true || message.id.fromMe == true){
+                  //onAddMessageUndefined(message)
+                }else{
                   onAddMessage(message)
-                }else return
+                }
               }
+              return
             })
           }, 4500)
         }, token)
@@ -333,8 +379,7 @@ class PuppeteerWhatsApp extends EventEmitter {
     }
   }
 
-  // CHECKED
-  getLog (name, e) {
+  getLog(name, e){
     if (APP_DEBUG) {
       console.log('function ' +  name)
       console.log(moment().format('YYYY-MM-DD HH:mm:ss'));
@@ -342,69 +387,165 @@ class PuppeteerWhatsApp extends EventEmitter {
     }
   }
 
-  // CHECKED
-  responseBot (message, WhatsApp) {
+  async sendToWebhookTo(message, WhatsApp){
     try {
       new Promise((resolve, reject) => {
-        var time = new Date()
         if (typeof message === 'object' && typeof message.apiToken !== 'undefined' && typeof message.from !== 'undefined') {
-          if( APP_DEBUG )console.log(message);
+          if(APP_DEBUG)console.log(message);
+
+          const token = message.apiToken
+          if(token != ''){
+            const WhatsAppDB = WhatsApp.getDatabaseToken()
+            const data_token = WhatsAppDB.get('token').find({ name: token }).value()
+            if(typeof data_token === 'undefined' || typeof data_token.endpoint === 'undefined') {
+              console.log({ response: 'Not defined token', status: false })
+            }else{
+              if(typeof message.id !== 'undefined' && typeof message.id.fromMe !== 'undefined'){
+                if(message.id.fromMe == true)var to_type = 'from'
+                else var to_type = 'to'
+
+                try{
+                  new Promise((resolve, reject) => {
+                    var number = message.from;
+
+                    WhatsApp.getWebSocketPage(data_token.endpoint).then(json_page => {
+
+                      if (typeof json_page === 'object' && typeof json_page.page !== 'undefined' && json_page.page != null) {
+                        var page = json_page.page
+                        WhatsApp.getContact(page, number).then(contact => {
+                          WhatsApp.getProfilePicThumb(page, number).then(picture => {
+                            message.picture = picture
+                            message.contact = contact
+                            WhatsApp.sendToWebhook(to_type, message, data_token)
+                          })
+                        })
+                      }
+                    })
+                  })
+                }catch(e){
+                  WhatsApp.sendToWebhook(to_type, message, data_token)
+                }
+                return
+              }
+            }
+          }
+          return
+        }
+      })
+    } catch (e) {
+      this.getLog('sendToWebhookTo', e)
+      return
+    }
+  }
+
+  async sendToBot(message, WhatsApp){
+    try {
+
+      new Promise((resolve, reject) => {
+        if (typeof message === 'object' && typeof message.apiToken !== 'undefined' && typeof message.from !== 'undefined') {
+          if(APP_DEBUG)console.log(message);
+
           const token = message.apiToken
           const WhatsAppDB = WhatsApp.getDatabaseToken()
           const data_token = WhatsAppDB.get('token').find({ name: token }).value()
-          if (typeof data_token === 'undefined' || typeof data_token.endpoint === 'undefined') {
+          if(typeof data_token === 'undefined' || typeof data_token.endpoint === 'undefined') {
             console.log({ response: 'Not defined token', status: false })
             return false
-          } else {
-            // BOT MESSAGE
+          }else{
+            //BOT ON MESSAGE
+            /*
+              -- POST
+              {
+                message: '',
+                body: {}
+                token: '',
+              }
+              -- GET
+              {
+                status: true,
+                type: 'message' or 'media'
+                message: '' or [],
+              }
+            */
             new Promise((resolve, reject) => {
-              //console.log(data_token);
+
               if (typeof data_token.bot !== 'undefined' && data_token.bot != null) {
-                //console.log(data_token);
+
                 WhatsApp.getWebSocketPage(data_token.endpoint).then(json_page => {
+
                   if (typeof json_page === 'object' && typeof json_page.page !== 'undefined' && json_page.page != null) {
                     var page = json_page.page
                     var bot = data_token.bot
                     var from = message.from
+                    message.token = token;
+
+                    //SEND TO BOT
                     var send = {
                       method: 'post',
-                      body: JSON.stringify({ token: token, message: message.body, data: JSON.stringify(message) }),
+                      body: JSON.stringify(message),
                       headers: { 'Content-Type': 'application/json' }
                     }
-                    fetch(bot, send).then(res => res.json()).then(parsed => {
-                      if (typeof parsed === 'object' && parsed.status == true && typeof parsed.message !== 'undefined') {
-                        var bot_message = parsed.message
-                        var options = {}
-                        if (typeof parsed.options !== 'undefined')var options = parsed.options;
-                        WhatsApp.sendMessage(page, from, bot_message, options)
-                      }
-                    })
+
+                    //BOT RESPONSE
+                    try{
+                      fetch(bot, send).then(res => res.json()).then(response => {
+                        if (typeof response === 'object' && response.status == true && typeof response.type !== 'undefined') {
+                          if(APP_DEBUG)console.log(response)
+
+                          var typeMessageBot = response.type
+                          if (typeof response.message !== 'undefined' && response.message != ''){
+                            var responseMessage = response.message
+
+                            if(typeMessageBot == 'message')WhatsApp.sendMessage(page, from, responseMessage)
+                            else if(typeMessageBot == 'media')WhatsApp.sendMedia(page, from, responseMessage)
+
+                            WhatsApp.sendToWebhook('to', responseMessage, data_token)
+                          }
+                        }
+                      })
+                    } catch (e) { if (APP_DEBUG)console.log(e) }
+                    //BOT RESPONSE
+
                   }
                 })
-              }
-            })
-
-            // WEBHOOK
-            new Promise((resolve, reject) => {
-              if (typeof data_token.webhook !== 'undefined' && data_token.webhook != null) {
-                var webhook = data_token.webhook
-                try {
-                  var send = { method: 'post', body: JSON.stringify(message), headers: { 'Content-Type': 'application/json' } }
-                  fetch(webhook, send).catch(e => { return false })
-                } catch (e) { if (APP_DEBUG)console.log(e) }
               }
             })
           }
         }
       })
+
+      WhatsApp.sendToWebhookTo(message, WhatsApp)
+
     } catch (e) {
-      this.getLog('responseBot', e)
-      return false
+      this.getLog('sendToBot', e)
+      return
     }
   }
 
-  // CHECKED
-  isUrl (url) {
+  //function sendToWebhook
+  sendToWebhook(action, message, data){
+    new Promise((resolve, reject) => {
+      if (typeof data.webhook !== 'undefined' && data.webhook != null) {
+        var webhook = data.webhook
+        try {
+          var send = { method: 'post', body: JSON.stringify({action: action, token: data.name, via: 'whatsapp', data: message}), headers: { 'Content-Type': 'application/json' } }
+          fetch(webhook, send)
+          .then(res => res.json())
+          .then(info => {
+            if(APP_DEBUG)console.log(info)
+          }).catch(e => {
+            this.getLog('sendToBot', e);
+          })
+          return
+        } catch (e) {
+          this.getLog('sendToBot', e);
+          return
+        }
+      }
+    })
+  }
+
+  isUrl(url){
     try {
       const data_url = new URL(url)
       if (typeof data_url !== 'undefined' && typeof data_url.host !== 'undefined' && data_url.host != '') return true
@@ -415,8 +556,7 @@ class PuppeteerWhatsApp extends EventEmitter {
     }
   }
 
-  // CHECKED
-  getDatabaseToken () {
+  getDatabaseToken(){
     var db = null
     try {
       var low = require('lowdb')
@@ -431,8 +571,7 @@ class PuppeteerWhatsApp extends EventEmitter {
     return db
   }
 
-  // CHECKED
-  getTimeSend (no) {
+  getTimeToSend(no){
     var to_time = 3582
     try {
       if (typeof no === 'number' && no > 0) {
@@ -449,13 +588,12 @@ class PuppeteerWhatsApp extends EventEmitter {
         }
       }
     } catch (e) {
-      this.getLog('getTimeSend', e)
+      this.getLog('getTimeToSend', e)
     }
     return to_time
   }
 
-  // CHECKED
-  async setWebSocket (ws_endpoint, token) {
+  async setWebSocket(ws_endpoint, token){
     var port = null
     try {
       var port = await getFreePorts(1, APP_HOST).then(res => res[0])
@@ -469,8 +607,7 @@ class PuppeteerWhatsApp extends EventEmitter {
     return 'ws://' + APP_HOST + ':' + port
   }
 
-  // CHECKED
-  async getWebSocketPage (ws_url) {
+  async getWebSocketPage(ws_url){
     try {
       const browser = await puppeteer.connect({ browserWSEndpoint: ws_url, ignoreHTTPSErrors: true })
       const pages_created = await browser.pages()
@@ -481,31 +618,81 @@ class PuppeteerWhatsApp extends EventEmitter {
     }
   }
 
-  // NOT GROUP SEND MESSAGE
-  async sendMessageToID (page, id, message, options = {}) {
+  async sendMedia(page, number, args){
     try {
-      return await page.evaluate((message, id, options) => {
+      return await page.evaluate((number, args) => {
+        try {
+          if (typeof number === 'string' && number != '') {
+            const get_number = window.Store.Chat.get(number)
+            const clean_number = number.replace(/\D+/g, '')
+            if (typeof get_number.id !== 'undefined' && typeof get_number.id.server !== 'undefined' && get_number.id.server == 'c.us') {
+              window.App.sendSeen(number)
+              try{var option = JSON.parse(args);}
+              catch(e){var option = JSON.parse(JSON.stringify(args));}
+
+              window.App.sendMessage(get_number, '', option)
+
+              return { number: clean_number, option: args, message: 'Send', status_code: 200 }
+            } else return { number: clean_number, option: {}, message: 'isNotNumber', status_code: 304 }
+          } else return { number: null, option: {}, message: 'isNotNumber', status_code: 404 }
+        } catch (e) {
+          return { number: null, args: {}, message: 'ErrorSend', status_code: 504 }
+        }
+      }, number, args)
+    } catch (e) {
+      this.getLog('sendMedia', e)
+      return { number: null, message: 'Close', status_code: 501 }
+    }
+  }
+
+  async getMedia(page, message){
+    try {
+      return await page.evaluate((message, APP_DEBUG) => {
+        return (async() => {
+          if(typeof message.mediaKey !== 'undefined' && message.mediaKey != '' && typeof message.clientUrl !== 'undefined' && message.clientUrl != '' && typeof message.mimetype !== 'undefined' && message.mimetype != '' && typeof message.type !== 'undefined' && message.type != ''){
+            const mbuffer = await window.App.downloadBuffer(message.clientUrl);
+            const mdecrypted = await window.Store.CryptoLib.decryptE2EMedia(message.type, mbuffer, message.mediaKey, message.mimetype);
+            const mdata = await window.App.readBlobAsync(mdecrypted._blob);
+            return {
+               data: mdata,
+               mimetype: message.mimetype,
+               filename: message.filename
+            }
+          }
+          return {
+            data: null,
+            mimetype: null,
+            filename: null
+          }
+        })();
+      }, message, APP_DEBUG)
+    } catch (e) {
+      this.getLog('getMedia', e)
+      return false
+    }
+  }
+
+  async setMessage(page, id, message){
+    try {
+      return await page.evaluate((message, id) => {
         try {
           if (typeof id === 'string' && id != '') {
             const get_id = window.Store.Chat.get(id)
             if (typeof get_id.id !== 'undefined' && typeof get_id.id.server !== 'undefined' && get_id.id.server == 'c.us') {
+
               window.App.sendSeen(id)
               const number = id.replace(/\D+/g, '')
               const replaceNumber = (message, number) => message.replace(/{number}/g, number)
-              try{
-                var noption = JSON.parse(options);
-              }catch(e){
-                var noption = JSON.parse(JSON.stringify(options));
-              }
+
               if (typeof message === 'string' && message != '') {
                 var message = replaceNumber(message, number)
-                window.App.sendMessage(get_id, message, noption)
+                window.App.sendMessage(get_id, message)
                 return { number: number, message: message, status_code: 200 }
               } else if (Array.isArray(message) && message.length > 0) {
                 message.forEach((data_message) => {
                   if (typeof data_message === 'string' && data_message != '') {
                     var message = replaceNumber(data_message, number)
-                    window.App.sendMessage(get_id, data_message, noption)
+                    window.App.sendMessage(get_id, data_message)
                     return { number: number, message: data_message, status_code: 200 }
                   }
                 })
@@ -515,15 +702,14 @@ class PuppeteerWhatsApp extends EventEmitter {
         } catch (e) {
           return { number: null, message: 'Error', status_code: 504 }
         }
-      }, message, id, options)
+      }, message, id)
     } catch (e) {
-      this.getLog('sendMessageToID', e)
+      this.getLog('setMessage', e)
       return { number: null, message: 'Close', status_code: 501 }
     }
   }
 
-  // CHECKED
-  async getMe (page) {
+  async getMe(page){
     try {
       return await page.evaluate(() => {
         var me = window.Store.Conn.serialize()
@@ -537,8 +723,7 @@ class PuppeteerWhatsApp extends EventEmitter {
     }
   }
 
-  // CHECKED
-  async getContact (page, id) {
+  async getContact(page, id){
     try {
       return await page.evaluate((id) => {
         if (typeof id === 'undefined' || id == '') return window.Store.Contact.serialize()
@@ -550,8 +735,7 @@ class PuppeteerWhatsApp extends EventEmitter {
     }
   }
 
-  // CHECKED
-  async getProfilePicThumb (page, id) {
+  async getProfilePicThumb(page, id){
     try {
       return await page.evaluate((id) => {
         if (typeof id === 'undefined' || id == '') return window.Store.ProfilePicThumb.serialize()
@@ -563,8 +747,7 @@ class PuppeteerWhatsApp extends EventEmitter {
     }
   }
 
-  // CHECKED
-  async getChat (page, id) {
+  async getChat(page, id){
     try {
       return await page.evaluate((id) => {
         if (typeof id === 'undefined' || id == '') return window.Store.Chat.serialize()
@@ -576,8 +759,7 @@ class PuppeteerWhatsApp extends EventEmitter {
     }
   }
 
-  // CHECKED
-  async getChatStats (page) {
+  async getChatStats(page){
     try {
       return await page.evaluate(() => {
         var chats = window.Store.Chat.serialize()
@@ -594,8 +776,7 @@ class PuppeteerWhatsApp extends EventEmitter {
     }
   }
 
-  // CHECKED
-  async getChatUnread (page) {
+  async getChatUnread(page){
     try {
       return await page.evaluate(() => {
         var chats = window.Store.Chat.serialize()
@@ -622,7 +803,7 @@ class PuppeteerWhatsApp extends EventEmitter {
   }
 
   // CHECKED
-  async loadEarlierMsgstById (page, id) {
+  async loadEarlierMsgstById(page, id){
     try {
       return await page.evaluate((id, APP_DEBUG) => {
         if (id != '') {
@@ -639,8 +820,7 @@ class PuppeteerWhatsApp extends EventEmitter {
     }
   }
 
-  // CHECKED
-  async setContactSeen (page, id) {
+  async setContactSeen(page, id){
     try {
       return await page.evaluate((id, APP_DEBUG) => {
         if (id != '') {
@@ -657,8 +837,7 @@ class PuppeteerWhatsApp extends EventEmitter {
     }
   }
 
-  // CHECKED
-  async setLogout (page) {
+  async setLogout(page){
     try {
       return await page.evaluate((APP_DEBUG) => {
         try {
@@ -674,18 +853,18 @@ class PuppeteerWhatsApp extends EventEmitter {
     }
   }
 
-  // CHECKED
-  async sendMessage (page, id, message, options = {}) {
+  async sendMessage(page, id, message){
     try {
-      if (typeof id === 'string' && id != '') var id = [id]
-      if (typeof id === 'object' && id.length > 0) {
+      if(typeof id === 'string' && id != ''){
+        return this.setMessage(page, id, message)
+      }else if (typeof id === 'object' && id.length > 0){
         var no_ids = id.length
-        var to_time = this.getTimeSend(no_ids)
+        var to_time = this.getTimeToSend(no_ids)
         var time = 1097
         id.forEach((from) => {
           setTimeout(() => {
             new Promise((resolve, reject) => {
-              this.sendMessageToID(page, from, message, options)
+              this.setMessage(page, from, message)
             })
           }, time)
           time += to_time
@@ -694,15 +873,11 @@ class PuppeteerWhatsApp extends EventEmitter {
       }
     } catch (e) {
       this.getLog('sendMessage', e)
-      return 0
+      return { number: null, message: 'Message Error', status_code: 504 }
     }
   }
 
-  async createTask (token, number, message) {
-  }
-
-  // CHECKED
-  async sendBroadcast (page, token, message, options) {
+  async sendBroadcast(page, token, message, options){
     try {
       if (typeof options.unread === 'undefined') var unread = false
       else var unread = true
@@ -711,7 +886,6 @@ class PuppeteerWhatsApp extends EventEmitter {
         var no_chats = to_number.length
         var status_code = 200
         var send_message = message + '\n\n#{number}'
-        this.createTask(token, to_number, send_message)
         this.sendMessage(page, to_number, send_message, options)
       } else {
         var status_code = 300
@@ -725,7 +899,7 @@ class PuppeteerWhatsApp extends EventEmitter {
   }
 
   // CHECKED
-  async getIdNumbers (page, unread) {
+  async getIdNumbers(page, unread){
     try {
       return await page.evaluate((unread) => {
         var to_number = []
@@ -805,10 +979,9 @@ class PuppeteerWhatsApp extends EventEmitter {
     }
   }
 
-  // CHECKED
-  async startWebService () {
+  async startWebService(){
     try {
-      if (typeof APP_PORT === 'number') {
+      if(typeof APP_PORT === 'number'){
         const is_open = await isFreePort(APP_PORT, APP_HOST).then(open => open[2])
         if (is_open) {
           const express = require('express')
@@ -824,29 +997,32 @@ class PuppeteerWhatsApp extends EventEmitter {
           ws.use(helmet())
 
           server.listen(APP_PORT, () => {
-            //var data_address = server.address()
-            //console.log('START WEB SERVICE ON ' + data_address.address + data_address.port)
             console.log('START WEBSERVICE ON ' + APP_SERVER)
             return ws
           })
 
-
           ws.all('*', (req, res, next) => {
-            if (typeof req.url !== 'undefined' && (req.url).match(/api/)) return next()
-            res.json({ response: 'Hello', status_code: 201 })
+            var regex = new RegExp(APP_API_PATH, 'g');
+            if (typeof req.url !== 'undefined' && (req.url).match(regex)) return next()
+            res.json({ response: 'Hello Server', status_code: 201 })
             return false
           })
 
-          ws.all('/api', (req, res) => {
-            res.json({ response: 'Api', status_code: 202 })
+          ws.all(APP_API_DIR + APP_API_PATH, (req, res) => {
+            res.json({ response: 'Hello WhatsApp API', status_code: 202 })
             return false
           })
 
-          ws.post('/api/:token/:action', (req, res) => {
+          ws.all(APP_API_DIR + APP_API_PATH +'/:token/:action', (req, res) => {
             if (typeof req.body === 'object' && typeof req.params.token === 'string' && typeof req.params.action === 'string') {
 
               const token = (req.params.token).trim()
               const action = (req.params.action).toLowerCase().trim()
+
+              if(APP_DEBUG){
+                console.log('token -> ' + token)
+                console.log('action -> ' + action)
+              }
 
               if (token == '')res.json({ response: 'Not allowed empty token', status_code: 401 })
               else if (action == '')res.json({ response: 'Not allowed empty action', status_code: 401 })
@@ -854,15 +1030,15 @@ class PuppeteerWhatsApp extends EventEmitter {
                 const WhatsApp = this
                 if (action == 'start') {
                   //console.log(req.body);
-                  if (typeof req.body.bot === 'string' && (req.body.bot).trim() != '' && WhatsApp.isUrl(req.body.bot)) var bot = (req.body.bot).trim()
+                  if (typeof req.body.bot === 'string' && (req.body.bot).trim() != '' && this.isUrl(req.body.bot)) var bot = (req.body.bot).trim()
                   else var bot = ''
 
-                  if (typeof req.body.webhook === 'string' && (req.body.webhook).trim() != '' && WhatsApp.isUrl(req.body.webhook)) var webhook = (req.body.webhook).trim()
+                  if (typeof req.body.webhook === 'string' && (req.body.webhook).trim() != '' && this.isUrl(req.body.webhook)) var webhook = (req.body.webhook).trim()
                   else var webhook = ''
 
-                  WhatsApp.start(token, bot, webhook)
+                  this.start(token, bot, webhook)
 
-                  WhatsApp.on('API', json => {
+                  this.on('API', json => {
                     try { res.json(json) } catch (e) {
                       if (APP_DEBUG) {
                         // console.log('Already sent api to client');
@@ -870,12 +1046,12 @@ class PuppeteerWhatsApp extends EventEmitter {
                     }
                   })
                 } else {
-                  const WhatsAppDB = WhatsApp.getDatabaseToken()
-                  const data_token = WhatsAppDB.get('token').find({ name: token }).value()
+                  const thisdb = this.getDatabaseToken()
+                  const data_token = thisdb.get('token').find({ name: token }).value()
                   if (typeof data_token === 'undefined' || typeof data_token.endpoint === 'undefined' || data_token.endpoint == null || data_token.endpoint == '') {
-                    res.json({ response: 'Not defined login', status_code: 403 })
+                    res.json({ response: 'Undefined login', status_code: 403 })
                   } else {
-                    // console.log(req.body);
+                    //if (APP_DEBUG) console.log(req.body)
                     const number = req.body.number
                     const message = req.body.message
                     var options = {}
@@ -887,65 +1063,112 @@ class PuppeteerWhatsApp extends EventEmitter {
                       }
                     }
 
-                    WhatsApp.getWebSocketPage(data_token.endpoint).then(json_page => {
+                    this.getWebSocketPage(data_token.endpoint).then(json_page => {
                       if (json_page != null && typeof json_page === 'object' && typeof json_page.page !== 'undefined' && json_page.page != null) {
                         var page = json_page.page
                         var browser = json_page.browser
                         switch (action) {
                           case 'stats':
-                            WhatsApp.getChatStats(page).then(response => res.json(response))
-                            break
+                            this.getChatStats(page).then(response => {
+                              this.sendToWebhook(action, response, data_token)
+                              res.json(response)
+                            })
+                          break
                           case 'state':
-                            WhatsApp.getStatePage(page).then(response => res.json(response))
-                            break
+                            this.getStatePage(page).then(response => {
+                              this.sendToWebhook(action, response, data_token)
+                              res.json(response)
+                            })
+                          break
                           case 'me':
-                            WhatsApp.getMe(page).then(response => res.json(response))
-                            break
+                            this.getMe(page).then(response => {
+                              this.sendToWebhook(action, response, data_token)
+                              res.json(response)
+                            })
+                          break
                           case 'contact':
-                            WhatsApp.getContact(page, number).then(response => res.json(response))
-                            break
-                          case 'photo':
-                            WhatsApp.getProfilePicThumb(page, number).then(response => res.json(response))
-                            break
+                            this.getContact(page, number).then(response => {
+                              this.sendToWebhook(action, response, data_token)
+                              res.json(response)
+                            })
+                          break
+                          case 'picture':
+                            this.getProfilePicThumb(page, number).then(response => {
+                              this.sendToWebhook(action, response, data_token)
+                              res.json(response)
+                            })
+                          break
                           case 'chat':
-                            WhatsApp.getChat(page).then(response => res.json(response))
-                            break
+                            this.getChat(page).then(response => {
+                              this.sendToWebhook(action, response, data_token)
+                              res.json(response)
+                            })
+                          break
                           case 'unread':
-                            WhatsApp.getChatUnread(page).then(response => res.json(response))
-                            break
+                            this.getChatUnread(page).then(response => {
+                              this.sendToWebhook(action, response, data_token)
+                              res.json(response)
+                            })
+                          break
                           case 'seen':
-                            WhatsApp.setContactSeen(page, number).then(response => res.json(response))
-                            break
+                            this.setContactSeen(page, number).then(response => {
+                              this.sendToWebhook(action, response, data_token)
+                              res.json(response)
+                            })
+                          break
                           case 'message':
-                            WhatsApp.sendMessage(page, number, message, options).then(response => res.json(response))
-                            break
+                            this.sendMessage(page, number, message).then(response => {
+                              this.sendToWebhook(action, response, data_token)
+                              res.json(response)
+                            })
+                          break
+                          case 'media':
+                            this.sendMedia(page, number, options).then(response => {
+                              this.sendToWebhook(action, response, data_token)
+                              res.json(response)
+                            })
+                          break
+                          case 'download':
+                            this.getMedia(page, options).then(response => {
+                              this.sendToWebhook(action, response, data_token)
+                              res.json(response)
+                            })
+                          break
                           case 'broadcast':
-                            WhatsApp.sendBroadcast(page, token, message, options).then(response => res.json(response))
-                            break
+                            this.sendBroadcast(page, token, message, options).then(response => {
+                              this.sendToWebhook(action, response, data_token)
+                              res.json(response)
+                            })
+                          break
                           case 'logout':
-                            WhatsApp.setLogout(page).then(response => {
+                            this.setLogout(page).then(response => {
                               setTimeout(() => {
                                 if (typeof browser !== null && typeof token !== 'undefined') {
-                                  WhatsAppDB.get('token').find({ name: token }).assign({ localstorage: null, endpoint: null, bot: null, webhook: null }).write()
-                                  WhatsApp.setDestroy(browser, page, token)
+                                  thisdb.get('token').find({ name: token }).assign({ localstorage: null, endpoint: null, bot: null, webhook: null }).write()
+                                  this.setDestroy(browser, page, token)
                                 }
                               }, 1500)
                               res.json(response)
                             })
-                            break
-                          // REVIEW
+                          break
                           case 'storage':
-                            WhatsApp.getNavigatorStorage(page).then(response => res.json(response))
-                            break
+                            this.getNavigatorStorage(page).then(response => {
+                            this.sendToWebhook(action, response, data_token)
+                            res.json(response)
+                          })
+                          break
                           case 'load_message':
-                            WhatsApp.loadEarlierMsgstById(page, number).then(response => res.json(response))
+                            this.loadEarlierMsgstById(page, number).then(response => {
+                              this.sendToWebhook(action, response, data_token)
+                              res.json(response)
+                            })
                             break
                           default:
-                            res.json({ response: 'Action not available: ' + action, status_code: 404 })
+                            res.json({ response: 'No action: ' + action, status_code: 404 })
                             break
                         }
                       } else {
-                        WhatsAppDB.get('token').find({ name: token }).assign({ endpoint: null }).write()
+                        thisdb.get('token').find({ name: token }).assign({ endpoint: null }).write()
                         res.json({ response: 'Invalid page token', status_code: 405 })
                         return false
                       }
